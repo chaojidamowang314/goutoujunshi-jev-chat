@@ -1,0 +1,83 @@
+name: 狗头军师 · 编译未签名 IPA
+
+# 在 GitHub 网页上点 Actions → 左侧选这个工作流 → Run workflow 即可。
+on:
+  workflow_dispatch:
+    inputs:
+      team_id:
+        description: 'Apple Team ID（iLoader 登录 Apple ID 后显示的那个 10 位代号）'
+        required: true
+        default: 'A5MAT59MZS'
+      bundle_id:
+        description: '主 App 的 Bundle ID（全局唯一，随便起一个自己的）'
+        required: true
+        default: 'ai.goutoujunshi.chatios'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: integrations/jev_ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 写入签名配置
+        env:
+          TEAM_ID: ${{ inputs.team_id }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+        run: |
+          set -euo pipefail
+          printf 'DEVELOPMENT_TEAM = %s\nGOUTOU_BUNDLE_ID = %s\nGOUTOU_APP_GROUP = group.%s.%s\nGOUTOU_KEYCHAIN_GROUP = %s.%s.%s\n' \
+            "$TEAM_ID" "$BUNDLE_ID" "$BUNDLE_ID" "$TEAM_ID" "$TEAM_ID" "$BUNDLE_ID" "$TEAM_ID" \
+            > Signing.local.xcconfig
+          echo '--- Signing.local.xcconfig ---'
+          cat Signing.local.xcconfig
+
+      - name: 编译真机包（不签名）
+        run: |
+          set -euo pipefail
+          xcodebuild -project GoutouJunshi.xcodeproj -scheme GoutouJunshi \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build-device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: 打包成 ipa 并自检
+        run: |
+          set -euo pipefail
+          APP="build-device/Build/Products/Debug-iphoneos/GoutouJunshi.app"
+          [ -d "$APP" ] || { echo "找不到编译产物 $APP"; exit 1; }
+
+          echo "=== 主 App Bundle ID ==="
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+
+          echo "=== 共享组（必须已经没有 \$( 才对）==="
+          echo -n "App Group:      "
+          /usr/libexec/PlistBuddy -c 'Print :GoutouAppGroup' "$APP/Info.plist"
+          echo -n "Keychain Group: "
+          /usr/libexec/PlistBuddy -c 'Print :GoutouKeychainGroup' "$APP/Info.plist"
+
+          echo "=== 内嵌扩展（应该是 keyboard 和 capture 两个）==="
+          ls -1 "$APP/PlugIns"
+
+          if grep -q '\$(' "$APP/Info.plist"; then
+            echo "❌ Info.plist 里还有没替换掉的 \$() 变量，签名配置没生效"
+            exit 1
+          fi
+
+          rm -rf Payload GoutouJunshi-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry GoutouJunshi-unsigned.ipa Payload
+          echo "=== 成品 ==="
+          ls -lh GoutouJunshi-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoutouJunshi-unsigned-ipa
+          path: integrations/jev_ios/GoutouJunshi-unsigned.ipa
+          if-no-files-found: error
