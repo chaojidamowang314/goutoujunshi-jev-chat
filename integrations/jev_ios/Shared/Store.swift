@@ -191,39 +191,24 @@ final class GoutouStore {
 enum CredentialVault {
     static let services = ["deepseek", "openrouter", "jev"]
     #if os(iOS)
-    private static func query(_ name: String) throws -> [String: Any] {
-        guard services.contains(name), let group = Bundle.main.object(forInfoDictionaryKey: "GoutouKeychainGroup") as? String,
-              !group.contains("$("), !group.isEmpty else { throw GoutouError.invalid("共享钥匙串配置未完成，请检查两个 target 的 Keychain Sharing") }
-        return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "ai.goutoujunshi.ios." + name,
-                kSecAttrAccount as String: "default", kSecAttrAccessGroup as String: group]
-    }
+    /// 这个 fork 走的是免费 Apple ID + iLoader 侧载：Apple 下发的描述文件里不含
+    /// keychain-access-groups，共享钥匙串拿不到，所以密钥改存已确认可用的 App Group 容器。
+    /// 对外接口（read / write / delete / load）与原来完全一致，调用方无需改动。
+    private static var defaults: UserDefaults { UserDefaults(suiteName: GoutouStore.group) ?? .standard }
+    private static func storageKey(_ name: String) -> String { "credential." + name }
     static func read(_ name: String) throws -> String {
-        var query = try query(name)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return "" }
-        guard status == errSecSuccess, let data = item as? Data, let value = String(data: data, encoding: .utf8) else {
-            throw GoutouError.invalid("钥匙串读取失败（\(status)），请检查共享权限")
-        }
-        return value
+        guard services.contains(name) else { throw GoutouError.invalid("未知的服务名称：\(name)") }
+        return defaults.string(forKey: storageKey(name)) ?? ""
     }
     static func write(_ value: String, name: String) throws {
         let value = value.trimmed
+        guard services.contains(name) else { throw GoutouError.invalid("未知的服务名称：\(name)") }
         guard !value.isEmpty, value.count <= 1024 else { throw GoutouError.invalid("请输入有效的 API Key") }
-        let query = try query(name)
-        let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
-        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            status = SecItemAdd(query.merging(attributes, uniquingKeysWith: { _, new in new }) as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw GoutouError.invalid("密钥保存失败（\(status)），请检查共享钥匙串签名") }
+        defaults.set(value, forKey: storageKey(name))
     }
     static func delete(_ name: String) throws {
-        let status = SecItemDelete(try query(name) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw GoutouError.invalid("无法删除密钥（\(status)）") }
+        guard services.contains(name) else { throw GoutouError.invalid("未知的服务名称：\(name)") }
+        defaults.removeObject(forKey: storageKey(name))
     }
     #else
     static func read(_ name: String) throws -> String { "" }
